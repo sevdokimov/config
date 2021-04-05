@@ -3,32 +3,11 @@
  */
 package com.typesafe.config.impl;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.DataInput;
-import java.io.DataInputStream;
-import java.io.DataOutput;
-import java.io.DataOutputStream;
-import java.io.Externalizable;
-import java.io.IOException;
-import java.io.NotSerializableException;
-import java.io.ObjectInput;
-import java.io.ObjectOutput;
-import java.io.ObjectStreamException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.EnumMap;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import com.typesafe.config.*;
 
-import com.typesafe.config.Config;
-import com.typesafe.config.ConfigException;
-import com.typesafe.config.ConfigList;
-import com.typesafe.config.ConfigObject;
-import com.typesafe.config.ConfigOrigin;
-import com.typesafe.config.ConfigValue;
-import com.typesafe.config.ConfigValueType;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
 
 /**
  * Deliberately shoving all the serialization code into this class instead of
@@ -38,6 +17,8 @@ import com.typesafe.config.ConfigValueType;
  * Java serialization format.
  */
 class SerializedConfigValue extends AbstractConfigValue implements Externalizable {
+
+    static final String LONG_STRING_KEY = "$!+xY*00";
 
     // this is the version used by Java serialization, if it increments it's
     // essentially an ABI break and bad
@@ -311,7 +292,22 @@ class SerializedConfigValue extends AbstractConfigValue implements Externalizabl
             out.writeUTF(((ConfigNumber) value).transformToString());
             break;
         case STRING:
-            out.writeUTF(((ConfigString) value).unwrapped());
+            String str = ((ConfigString) value).unwrapped();
+
+            if (str.equals(LONG_STRING_KEY)) {
+                out.writeUTF(LONG_STRING_KEY);
+                out.writeInt(0);
+            } else {
+                try {
+                    out.writeUTF(str);
+                } catch (UTFDataFormatException e) {
+                    byte[] bytes = str.getBytes(StandardCharsets.UTF_8);
+                    out.writeUTF(LONG_STRING_KEY);
+                    out.writeInt(bytes.length);
+                    out.write(bytes);
+                }
+            }
+
             break;
         case LIST:
             ConfigList list = (ConfigList) value;
@@ -355,7 +351,18 @@ class SerializedConfigValue extends AbstractConfigValue implements Externalizabl
             String sd = in.readUTF();
             return new ConfigDouble(origin, vd, sd);
         case STRING:
-            return new ConfigString.Quoted(origin, in.readUTF());
+            String str = in.readUTF();
+
+            if (str.equals(LONG_STRING_KEY)) {
+                int n = in.readInt();
+                if (n > 0) {
+                    byte[] data = new byte[n];
+                    in.readFully(data);
+                    str = new String(data, StandardCharsets.UTF_8);
+                }
+            }
+
+            return new ConfigString.Quoted(origin, str);
         case LIST:
             int listSize = in.readInt();
             List<AbstractConfigValue> list = new ArrayList<AbstractConfigValue>(listSize);
